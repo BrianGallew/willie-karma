@@ -22,6 +22,7 @@ DEBUG_LEVEL = 'verbose'
 
 feedback = None
 byself = None
+penalty = False
 
 def debug_(tag, text, level):
     """Mimic willie.debug function for pytest to use.
@@ -37,11 +38,13 @@ def configure(config):
     | ------- | ------- | ------- |
     | feedback | True | Notify by bot |
     | byself | False | Self (pro|de)mote |
+    | penalty | False | Penalize self (pro|de)mote |
 
     """
     if config.option('Configure karma', False):
-        config.interactive_add('karma', 'feedback', 'Notify by bot', 'True')
-        config.interactive_add('karma', 'byself', 'Self (pro|de)mote', 'False')
+        config.add_option('karma', 'feedback', 'Notify by bot', True)
+        config.add_option('karma', 'byself', 'Self (pro|de)mote')
+        config.add_option('karma', 'penalty', 'Penalize self (pro|de)mote')
 
 def setup(bot):
     """Setup the database, get the settings.
@@ -50,50 +53,49 @@ def setup(bot):
 
     """
     #. get debug function
-    global debug
+    global debug, feedback, byself, penalty
     debug = bot.debug if bot.debug else debug
     #. get settings
-    feedback_, byself_, debug_ = True, False, False
+    feedback_, byself_, penalty_, debug_ = True, False, False, False
+
+    if not bot: return
+
     try:
         config = getattr(bot.config, MODULE)
-        feedback_ = is_true(config.feedback)
-        byself_ = is_true(config.byself)
+        feedback_ = config.feedback
+        byself_ = config.byself
+        penalty_ = config.penalty
     except Exception, e:
         pass
-    global feedback, byself
     feedback = feedback_
     byself = byself_
-
+    penalty = penalty_
     #. check database
     if bot.db:
-        key, name = WHO, KARMA
-        columns = [key, KARMA, REASON]
-        if not getattr(bot.db, name):
-                try:
-                    bot.db.add_table(name, columns, key)
-                except Exception, e:
-                    debug(MODULE, 'Table init fail - %s' % (e), DEBUG_LEVEL)
-                    raise e
+        columns = [WHO, KARMA, REASON]
+        if not getattr(bot.db, KARMA):
+            try:
+                bot.db.add_table(KARMA, columns, WHO)
+            except Exception, e:
+                debug(MODULE, 'Table init fail - %s' % (e), DEBUG_LEVEL)
+                raise e
+        table = getattr(bot.db, KARMA)
+        # Pass through the DB and force all karma values to be integers
+        for key in table.keys():
+            karma, reason = table.get(who, (KARMA, REASON))
+            karma = int(karma)
+            if karma == 0:
+                table.delete(key)
+            else:
+                table.update(key, dict(karma=karma, reason=reason))
     else:
         msg = "DB init fail, setup the DB first!"
         debug(MODULE, msg, DEBUG_LEVEL)
-        raise Exception(msg)
+        raise ConfigurationError(msg)
 
 ###############################################################################
 # Helper function
 ###############################################################################
-
-def is_true(value):
-    """Return True if value is true
-
-    :value: value
-    :returns: True or False
-
-    """
-    try:
-        return True if  value.lower() == 'true' else False
-    except Exception:
-        return value
 
 def get_table(bot):
     """Return the table instance.
@@ -115,134 +117,62 @@ def get_karma(table, who):
     :returns: (karma, reason)
 
     """
-    karma, reason = str(0), str(None)
+    karma, reason = 0, str(None)
     try:
         karma, reason = table.get(who, (KARMA, REASON))
     except Exception, e:
         debug(MODULE, "get karma fail - %s." % (e), DEBUG_LEVEL)
     return karma, reason
 
-def _update_karma(table, who, reason, method='+'):
+def _update_karma(bot, table, who, reason, amount):
     """Update karma for specify IRC user.
 
+    :bot: williw.bot.Willie
     :table: willie.db.Table
     :who: nickname of IRC user
     :reason: reason
-    :method: '+' or '-'
+    :amount: number
 
     """
-    karma = get_karma(table, who)[0]
-    karma = int(karma) if karma else 0
+    karma = get_karma(table, who)[0] + amount
     try:
-        if method == '+':
-            table.update(who, dict(karma=str(karma + 1), reason=reason))
+        if karma == 0:
+            table.delete(who)
+            if feedback:
+                bot.say("%s garbage collected" % (who, karma, reason))
         else:
-            table.update(who, dict(karma=str(karma - 1), reason=reason))
-    except Exception, e:
-        debug(MODULE, "update karma fail, e: %s" % (e), DEBUG_LEVEL)
-
-def promote_karma(table, who, reason):
-    """Promote karma for specify IRC user.
-
-    :table: willie.db.Table
-    :who: nickname of IRC user
-    :reason: reason
-
-    """
-    return _update_karma(table, who, reason, '+')
-
-def demote_karma(table, who, reason):
-    """Demote karma for specify IRC user.
-
-    :table: willie.db.Table
-    :who: nickname of IRC user
-    :reason: reason
-
-    """
-    return _update_karma(table, who, reason, '-')
-
-def _parse_msg(msg, method='+'):
-    """Parse the message.
-
-    :msg: message
-    :returns: (who, reason)
-
-    """
-    try:
-        who = msg.split(method)[0].strip().split().pop()
-        reason = msg.split(method)[2].strip()
-        if '#' in reason:
-            reason = reason.split('#')[1].strip()
-        if len(reason) == 0:
-            reason = None
-        #. check if nickname only contain [a-Z_]
-        for s in who:
-            if s not in "%s_" % string.ascii_letters:
-                who = None
-                break
-        #. strip illegal chars
-        reason = reason.replace('"', '') if reason else reason
-    except Exception, e:
-        debug(MODULE, "parse message fail - %s." % (e), DEBUG_LEVEL)
-        return None, None
-    return who, reason
-
-def parse_promote(msg):
-    """Parse the message with '++'.
-
-    :msg: message
-    :returns: (who, reason)
-
-    """
-    return _parse_msg(msg, method='+')
-
-def parse_demote(msg):
-    """Parse the message with '--'.
-
-    :msg: message
-    :returns: (who, reason)
-
-    """
-    return _parse_msg(msg, method='-')
-
-def meet_karma(bot, trigger, parse_fun, karma_fun):
-    """Update karma status for specify IRC user
-
-    :bot: willie.bot.Willie
-    :trigger: willie.bot.Willie.Trigger
-
-    """
-    table = get_table(bot)
-    if table:
-        msg = trigger.bytes
-        who, reason = parse_fun(msg)
-        if who:
-            #. not allow self (pro|de)mote
-            if not byself:
-                if who == trigger.nick:
-                    return
-            #. update karma
-            reason = reason if reason else str(None)
-            karma_fun(table, who, reason)
-            karma, reason= get_karma(table, who)
+            table.update(who, dict(karma=karma, reason=reason))
             if feedback:
                 bot.say("%s: %s, reason: %s" % (who, karma, reason))
+    except Exception, e:
+        debug(MODULE, "update karma fail, e: %s" % (e), DEBUG_LEVEL)
 
 ###############################################################################
 # Event & Command
 ###############################################################################
 
-@willie.module.rule(r'^[\w][\S]+[\+\+]')
-def meet_promote_karma(bot, trigger):
-    """Update karma status for specify IRC user if get '++' message.
-    """
-    return meet_karma(bot, trigger, parse_promote, promote_karma)
+@willie.module.rule(r'^(\w+)(\+\+|\-\-)+\s(.*)')
+def meet_karma(bot, trigger):
+    """Update karma status for specific IRC user.
+    :bot: willie.bot.Willie
+    :trigger: willie.bot.Willie.Trigger
 
-@willie.module.rule(r'^[\w][\S]+[\-\-]')
-def meet_demote_karma(bot, trigger):
-    """Update karma status for specify IRC user if get '--' message.
     """
-    return meet_karma(bot, trigger, parse_demote, demote_karma)
+    table = get_table(bot)
+    if not table: return
+
+    (who, directions, reason) = trigger.groups()
+    #. penalize people for trying to promote themselves.
+    if penalty and who == trigger.nick:
+        reason = 'Penalized for self-promotion'
+        _update_karma(bot, table, who, reason, -1)
+    #. not allow self (pro|de)mote
+    if not byself:
+        if who == trigger.nick:
+            return
+    #. update karma
+    increment = directions.count('++') - directions.count('--')
+    _update_karma(bot, table, who, reason, increment)
 
 @willie.module.commands('karma')
 def karma(bot, trigger):
