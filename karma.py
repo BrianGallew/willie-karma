@@ -56,7 +56,7 @@ def setup(bot):
     global debug, feedback, byself, penalty
     debug = bot.debug if bot.debug else debug
     #. get settings
-    feedback_, byself_, penalty_, debug_ = True, False, False, False
+    feedback_, byself_, penalty_ = True, False, False
 
     if not bot: return
 
@@ -72,22 +72,12 @@ def setup(bot):
     penalty = penalty_
     #. check database
     if bot.db:
-        columns = [WHO, KARMA, REASON]
         if not getattr(bot.db, KARMA):
             try:
-                bot.db.add_table(KARMA, columns, WHO)
+                bot.db.add_table(KARMA, [WHO, KARMA, REASON], WHO)
             except Exception, e:
                 debug(MODULE, 'Table init fail - %s' % (e), DEBUG_LEVEL)
                 raise e
-        table = getattr(bot.db, KARMA)
-        # Pass through the DB and force all karma values to be integers
-        for key in table.keys():
-            karma, reason = table.get(who, (KARMA, REASON))
-            karma = int(karma)
-            if karma == 0:
-                table.delete(key)
-            else:
-                table.update(key, dict(karma=karma, reason=reason))
     else:
         msg = "DB init fail, setup the DB first!"
         debug(MODULE, msg, DEBUG_LEVEL)
@@ -120,6 +110,7 @@ def get_karma(table, who):
     karma, reason = 0, str(None)
     try:
         karma, reason = table.get(who, (KARMA, REASON))
+        karma = int(karma)
     except Exception, e:
         debug(MODULE, "get karma fail - %s." % (e), DEBUG_LEVEL)
     return karma, reason
@@ -141,7 +132,7 @@ def _update_karma(bot, table, who, reason, amount):
             if feedback:
                 bot.say("%s garbage collected" % (who, karma, reason))
         else:
-            table.update(who, dict(karma=karma, reason=reason))
+            table.update(who, dict(karma=str(karma), reason=reason))
             if feedback:
                 bot.say("%s: %s, reason: %s" % (who, karma, reason))
     except Exception, e:
@@ -151,7 +142,7 @@ def _update_karma(bot, table, who, reason, amount):
 # Event & Command
 ###############################################################################
 
-@willie.module.rule(r'^(\w+)(\+\+|\-\-)+\s(.*)')
+@willie.module.rule(r'^([a-zA-Z0-9_]+)((?:\+\+|--)+)\s*(.*)')
 def meet_karma(bot, trigger):
     """Update karma status for specific IRC user.
     :bot: willie.bot.Willie
@@ -162,6 +153,7 @@ def meet_karma(bot, trigger):
     if not table: return
 
     (who, directions, reason) = trigger.groups()
+    while who[-1] == "_": who = who[:-1]
     #. penalize people for trying to promote themselves.
     if penalty and who == trigger.nick:
         reason = 'Penalized for self-promotion'
