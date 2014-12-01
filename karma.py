@@ -24,12 +24,19 @@ feedback = None
 byself = None
 penalty = False
 
+
 def debug_(tag, text, level):
     """Mimic willie.debug function for pytest to use.
     """
     print "[%s] %s" % (tag, text)
 
 debug = debug_
+
+
+def lookup_alias(nick):
+    '''Stub function for use if alias dereferencing isn't available.'''
+    return nick.replace('_', '')  # Remove any underscores
+
 
 def configure(config):
     """
@@ -46,6 +53,7 @@ def configure(config):
         config.add_option('karma', 'byself', 'Self (pro|de)mote')
         config.add_option('karma', 'penalty', 'Penalize self (pro|de)mote')
 
+
 def setup(bot):
     """Setup the database, get the settings.
 
@@ -58,7 +66,8 @@ def setup(bot):
     #. get settings
     feedback_, byself_, penalty_ = True, False, False
 
-    if not bot: return
+    if not bot:
+        return
 
     try:
         config = getattr(bot.config, MODULE)
@@ -87,6 +96,7 @@ def setup(bot):
 # Helper function
 ###############################################################################
 
+
 def get_table(bot):
     """Return the table instance.
 
@@ -98,6 +108,7 @@ def get_table(bot):
         return getattr(bot.db, KARMA)
     except Exception:
         return None
+
 
 def get_karma(table, who):
     """Get karma status from the table.
@@ -114,6 +125,7 @@ def get_karma(table, who):
     except Exception, e:
         debug(MODULE, "get karma fail - %s." % (e), DEBUG_LEVEL)
     return karma, reason
+
 
 def _update_karma(bot, table, who, reason, amount):
     """Update karma for specify IRC user.
@@ -142,6 +154,7 @@ def _update_karma(bot, table, who, reason, amount):
 # Event & Command
 ###############################################################################
 
+
 @willie.module.rule(r'^([a-zA-Z0-9_]+)((?:\+\+|--)+)\s*(.*)')
 def meet_karma(bot, trigger):
     """Update karma status for specific IRC user.
@@ -150,10 +163,11 @@ def meet_karma(bot, trigger):
 
     """
     table = get_table(bot)
-    if not table: return
+    if not table:
+        return
 
     (who, directions, reason) = trigger.groups()
-    while who[-1] == "_": who = who[:-1]
+    who = bot.memory.get('alias_lookup', lookup_alias)(who)
     #. penalize people for trying to promote themselves.
     if penalty and who == trigger.nick:
         reason = 'Penalized for self-promotion'
@@ -166,6 +180,7 @@ def meet_karma(bot, trigger):
     increment = directions.count('++') - directions.count('--')
     _update_karma(bot, table, who, reason, increment)
 
+
 @willie.module.commands('karma')
 def karma(bot, trigger):
     """Command to show the karma status for specify IRC user.
@@ -174,10 +189,9 @@ def karma(bot, trigger):
     if table:
         if trigger.group(2):
             who = trigger.group(2).strip().split()[0]
-            karma, reason= get_karma(table, who)
+            karma, reason = get_karma(table, who)
             bot.say("%s: %s, reason: %s" % (who, karma, reason))
         else:
             bot.say(".karma <nick> - Reports karma status for <nick>.")
     else:
         bot.say("Setup the database first, contact your bot admin.")
-
